@@ -12,23 +12,76 @@
 	let isVolumeControlsExpanded = false;
 	let volume = 100;
 
-	// --- New functions for Increment/Decrement ---
+	// --- Refresh function ---
+	function handleRefresh() {
+		if ($userSession?.provider_token) {
+			getCurrentlyPlaying($userSession.provider_token, true);
+		}
+	}
+
+	// --- Volume Controls ---
+	let fadeInterval: ReturnType<typeof setInterval>;
+
+	// Core function that just sends the API request
+	async function _setSpotifyVolume() {
+		if (!$userSession?.provider_token) return;
+		const endpoint = `https://api.spotify.com/v1/me/player/volume?volume_percent=${volume}`;
+		await fetch(endpoint, {
+			method: 'PUT',
+			headers: { Authorization: `Bearer ${$userSession.provider_token}` }
+		});
+	}
+
+	// Function for manual adjustments (slider, presets, inc/dec)
+	function setVolume() {
+		// Stop any fade if the user manually intervenes
+		clearInterval(fadeInterval);
+		// Snap the value to the nearest 5 for slider control
+		volume = Math.round(volume / 5) * 5;
+		// Send the API request
+		_setSpotifyVolume();
+	}
+
 	function incrementVolume() {
-		// Increase volume by 5, but not past 100
-		volume = Math.min(100, volume + 5);
+		clearInterval(fadeInterval);
+		volume = Math.min(100, volume + 5); // Changed back to 5
 		setVolume();
 	}
 	function decrementVolume() {
-		// Decrease volume by 5, but not past 0
-		volume = Math.max(0, volume - 5);
+		clearInterval(fadeInterval);
+		volume = Math.max(0, volume - 5); // Changed back to 5
 		setVolume();
 	}
 
 	function setVolumePreset(newVolume: number) {
+		clearInterval(fadeInterval);
 		volume = newVolume;
 		setVolume();
 	}
 
+	function fadeVolume(fadeIn: boolean) {
+		clearInterval(fadeInterval); // Start a new fade from scratch
+
+		const targetVolume = fadeIn ? 100 : 0;
+		if (volume === targetVolume) return;
+
+		const totalDuration = 3000; // Changed to 3 seconds
+		const steps = Math.abs(targetVolume - volume) / 10; // Fades still use 10 for fewer API calls
+		if (steps === 0) return;
+		const stepInterval = totalDuration / steps;
+
+		fadeInterval = setInterval(() => {
+			volume = fadeIn ? Math.min(100, volume + 10) : Math.max(0, volume - 10);
+
+			_setSpotifyVolume();
+
+			if (volume === targetVolume) {
+				clearInterval(fadeInterval);
+			}
+		}, stepInterval);
+	}
+
+	// --- UI Toggles ---
 	function toggleAlbumArt() {
 		showAlbumArt = !showAlbumArt;
 	}
@@ -38,6 +91,8 @@
 	function toggleVolumeControls() {
 		isVolumeControlsExpanded = !isVolumeControlsExpanded;
 	}
+
+	// --- Auth & API Functions ---
 	async function loginWithSpotify() {
 		await supabase.auth.signInWithOAuth({
 			provider: 'spotify',
@@ -54,7 +109,8 @@
 	}
 	async function getCurrentlyPlaying(token: string, isRefresh = false) {
 		if (!isRefresh) isLoading = true;
-		const endpoint = 'https://api.spotify.com/v1/me/player/currently-playing';
+		isRefreshing = true;
+		const endpoint = 'https://api.spotify.com/v1/me/player';
 		const response = await fetch(endpoint, {
 			headers: { Authorization: `Bearer ${token}` }
 		});
@@ -63,20 +119,14 @@
 		} else if (response.ok) {
 			const data = await response.json();
 			currentlyPlaying = data;
-			if (data.device) {
+			if (data && data.device) {
 				volume = data.device.volume_percent;
 			}
 		}
 		isLoading = false;
+		setTimeout(() => (isRefreshing = false), 500);
 	}
-	async function setVolume() {
-		if (!$userSession?.provider_token) return;
-		const endpoint = `https://api.spotify.com/v1/me/player/volume?volume_percent=${volume}`;
-		await fetch(endpoint, {
-			method: 'PUT',
-			headers: { Authorization: `Bearer ${$userSession.provider_token}` }
-		});
-	}
+
 	async function playerAction(endpoint: string, method: 'PUT' | 'POST') {
 		if (!$userSession?.provider_token) return;
 		isRefreshing = true;
@@ -115,8 +165,10 @@
 			class="bg-neutral-900 rounded-xl w-full min-h-[600px] p-8 flex flex-col items-center"
 		>
 			{#if $userSession}
+				<!-- Player Area -->
 				<div
-					class="w-full flex-grow flex flex-col items-center justify-center gap-6 transition-all duration-300"
+					class="w-full flex-grow flex flex-col items-center justify-center gap-6 transition-opacity"
+					class:opacity-50={isRefreshing}
 				>
 					{#if isLoading}
 						<p class="text-neutral-400">Loading...</p>
@@ -128,7 +180,7 @@
 								class="w-48 h-48 rounded-md shadow-lg"
 							/>
 						{/if}
-						<div class="text-center">
+						<div class="text-center w-full min-w-0">
 							<p class="font-bold text-xl truncate">{currentlyPlaying.item.name}</p>
 							<p class="text-neutral-400 text-sm truncate">
 								{currentlyPlaying.item.artists.map((a) => a.name).join(', ')}
@@ -139,6 +191,7 @@
 								type="range"
 								min="0"
 								max="100"
+								step="5"
 								bind:value={volume}
 								on:change={setVolume}
 								disabled={!currentlyPlaying}
@@ -152,9 +205,7 @@
 								class="text-neutral-400 hover:text-white transition-colors"
 								aria-label="Previous Track"
 							>
-								<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"
-									><path fill="currentColor" d="M6 6h2v12H6zm3.5 6L18 6v12l-8.5-6z" /></svg
-								>
+								<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><path fill="currentColor" d="M6 6h2v12H6zm3.5 6L18 6v12l-8.5-6z" /></svg>
 							</button>
 							<button
 								on:click={currentlyPlaying.is_playing ? pause : play}
@@ -162,21 +213,9 @@
 								aria-label={currentlyPlaying.is_playing ? 'Pause' : 'Play'}
 							>
 								{#if currentlyPlaying.is_playing}
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										width="32"
-										height="32"
-										viewBox="0 0 24 24"
-										><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg
-									>
+									<svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
 								{:else}
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										width="32"
-										height="32"
-										viewBox="0 0 24 24"
-										><path fill="currentColor" d="M8 5v14l11-7z" /></svg
-									>
+									<svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 6.82v10.36c0 .79.87 1.27 1.54.84l8.14-5.18c.62-.39.62-1.29 0-1.69L9.54 5.98C8.87 5.55 8 6.03 8 6.82z"/></svg>
 								{/if}
 							</button>
 							<button
@@ -184,9 +223,7 @@
 								class="text-neutral-400 hover:text-white transition-colors"
 								aria-label="Next Track"
 							>
-								<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"
-									><path fill="currentColor" d="M6 18v-12l8.5 6L6 18zM16 6h2v12h-2z" /></svg
-								>
+								<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><path fill="currentColor" d="M6 18v-12l8.5 6L6 18zM16 6h2v12h-2z" /></svg>
 							</button>
 						</div>
 					{:else}
@@ -197,7 +234,9 @@
 					{/if}
 				</div>
 
+				<!-- Collapsible Controls Section -->
 				<div class="w-full mt-4 flex flex-col gap-2">
+					<!-- Volume Controls Panel -->
 					<div class="bg-neutral-800 rounded-lg">
 						<button
 							on:click={toggleVolumeControls}
@@ -230,14 +269,7 @@
 										class="p-2 rounded-full hover:bg-neutral-700"
 										aria-label="Decrement volume"
 									>
-										<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-											><path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												stroke-width="2"
-												d="M20 12H4"
-											/></svg
-										>
+										<svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M19 12.998H5v-2h14z"/></svg>
 									</button>
 									<span class="text-sm font-semibold w-10 text-center">{volume}%</span>
 									<button
@@ -245,14 +277,7 @@
 										class="p-2 rounded-full hover:bg-neutral-700"
 										aria-label="Increment volume"
 									>
-										<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-											><path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												stroke-width="2"
-												d="M12 4v16m8-8H4"
-											/></svg
-										>
+										<svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M19 12.998h-6v6h-2v-6H5v-2h6v-6h2v6h6z"/></svg>
 									</button>
 								</div>
 								<div class="flex justify-around items-center">
@@ -282,10 +307,23 @@
 										>100%</button
 									>
 								</div>
+								<div class="flex justify-around items-center pt-2">
+									<button
+										on:click={() => fadeVolume(false)}
+										class="text-xs font-semibold px-3 py-1 rounded-full hover:bg-neutral-700"
+										>Fade Out</button
+									>
+									<button
+										on:click={() => fadeVolume(true)}
+										class="text-xs font-semibold px-3 py-1 rounded-full hover:bg-neutral-700"
+										>Fade In</button
+									>
+								</div>
 							</div>
 						{/if}
 					</div>
 
+					<!-- UI Controls Panel -->
 					<div class="bg-neutral-800 rounded-lg">
 						<button
 							on:click={toggleUiControls}
@@ -309,36 +347,33 @@
 						{#if isUiControlsExpanded}
 							<div
 								transition:slide={{ duration: 300 }}
-								class="p-3 border-t border-neutral-700 flex justify-center"
+								class="p-3 border-t border-neutral-700 flex justify-center gap-4"
 							>
+								<!-- Refresh Button -->
+								<button
+									on:click={handleRefresh}
+									aria-label="Refresh currently playing"
+									class="p-2 rounded-full hover:bg-neutral-700"
+									disabled={!currentlyPlaying}
+								>
+									<svg 
+										class="w-6 h-6" 
+										class:animate-spin={isRefreshing}
+										xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+										<path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/>
+									</svg>
+								</button>
+
+								<!-- Toggle Album Art Button -->
 								<button
 									on:click={toggleAlbumArt}
 									aria-label="Toggle album art"
 									class="p-2 rounded-full hover:bg-neutral-700"
 								>
 									{#if showAlbumArt}
-										<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-											><path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												stroke-width="2"
-												d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18"
-											/></svg
-										>
+										<svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
 									{:else}
-										<svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"
-											><path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												stroke-width="2"
-												d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-											/><path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												stroke-width="2"
-												d="M2.458 12C3.732 7.943 7.522 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.478 0-8.268-2.943-9.542-7z"
-											/></svg
-										>
+										<svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="currentColor"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.44-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 9.88 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg>
 									{/if}
 								</button>
 							</div>
@@ -362,3 +397,4 @@
 		</main>
 	</div>
 </div>
+
