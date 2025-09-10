@@ -44,12 +44,12 @@
 
 	function incrementVolume() {
 		clearInterval(fadeInterval);
-		volume = Math.min(100, volume + 5); // Changed back to 5
+		volume = Math.min(100, volume + 5);
 		setVolume();
 	}
 	function decrementVolume() {
 		clearInterval(fadeInterval);
-		volume = Math.max(0, volume - 5); // Changed back to 5
+		volume = Math.max(0, volume - 5);
 		setVolume();
 	}
 
@@ -65,8 +65,8 @@
 		const targetVolume = fadeIn ? 100 : 0;
 		if (volume === targetVolume) return;
 
-		const totalDuration = 3000; // Changed to 3 seconds
-		const steps = Math.abs(targetVolume - volume) / 10; // Fades still use 10 for fewer API calls
+		const totalDuration = 3000;
+		const steps = Math.abs(targetVolume - volume) / 10; // Fades use 10 for fewer API calls
 		if (steps === 0) return;
 		const stepInterval = totalDuration / steps;
 
@@ -107,53 +107,81 @@
 		await supabase.auth.signOut();
 		currentlyPlaying = null;
 	}
+
 	async function getCurrentlyPlaying(token: string, isRefresh = false) {
 		if (!isRefresh) isLoading = true;
 		isRefreshing = true;
-		const endpoint = 'https://api.spotify.com/v1/me/player';
-		const response = await fetch(endpoint, {
-			headers: { Authorization: `Bearer ${token}` }
-		});
-		if (response.status === 204 || response.status > 400) {
-			currentlyPlaying = null;
-		} else if (response.ok) {
-			const data = await response.json();
-			currentlyPlaying = data;
-			if (data && data.device) {
-				volume = data.device.volume_percent;
+		try {
+			const endpoint = 'https://api.spotify.com/v1/me/player';
+			const response = await fetch(endpoint, {
+				headers: { Authorization: `Bearer ${token}` }
+			});
+			if (response.status === 204 || response.status > 400) {
+				currentlyPlaying = null;
+			} else if (response.ok) {
+				const data = await response.json();
+				currentlyPlaying = data;
+				if (data && data.device) {
+					volume = data.device.volume_percent;
+				}
 			}
+		} catch (error) {
+			console.error('Error fetching currently playing track:', error);
+			currentlyPlaying = null;
+		} finally {
+			// This block GUARANTEES that loading will finish, even if an error occurs.
+			isLoading = false;
+			setTimeout(() => (isRefreshing = false), 500);
 		}
-		isLoading = false;
-		setTimeout(() => (isRefreshing = false), 500);
 	}
 
+	// A more robust, awaitable function for player actions
 	async function playerAction(endpoint: string, method: 'PUT' | 'POST') {
 		if (!$userSession?.provider_token) return;
-		isRefreshing = true;
-		try {
-			await fetch(endpoint, {
-				method,
-				headers: { Authorization: `Bearer ${$userSession.provider_token}` }
-			});
-			setTimeout(() => {
-				if ($userSession?.provider_token) getCurrentlyPlaying($userSession.provider_token, true);
-			}, 500);
-		} finally {
-			setTimeout(() => (isRefreshing = false), 700);
-		}
+		await fetch(endpoint, {
+			method,
+			headers: { Authorization: `Bearer ${$userSession.provider_token}` }
+		});
 	}
+
 	function play() {
+		// Optimistic UI update
+		if (currentlyPlaying) {
+			currentlyPlaying.is_playing = true;
+		}
+		// Send the command in the background
 		playerAction('https://api.spotify.com/v1/me/player/play', 'PUT');
 	}
+
 	function pause() {
+		// Optimistic UI update
+		if (currentlyPlaying) {
+			currentlyPlaying.is_playing = false;
+		}
+		// Send the command in the background
 		playerAction('https://api.spotify.com/v1/me/player/pause', 'PUT');
 	}
+
 	function nextTrack() {
 		playerAction('https://api.spotify.com/v1/me/player/next', 'POST');
+		// After the command is sent, wait a moment then refresh the UI
+		setTimeout(() => {
+			if ($userSession?.provider_token) {
+				getCurrentlyPlaying($userSession.provider_token, true);
+			}
+		}, 500);
 	}
+
 	function prevTrack() {
 		playerAction('https://api.spotify.com/v1/me/player/previous', 'POST');
+		// After the command is sent, wait a moment then refresh the UI
+		setTimeout(() => {
+			if ($userSession?.provider_token) {
+				getCurrentlyPlaying($userSession.provider_token, true);
+			}
+		}, 500);
 	}
+	
 	$: if ($userSession?.provider_token) {
 		getCurrentlyPlaying($userSession.provider_token);
 	}
